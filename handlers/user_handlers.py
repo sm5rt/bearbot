@@ -3,26 +3,28 @@ import os
 import logging
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes
 import asyncio
 from db.mongo_client import db
 from utils.validators import is_valid_tag, clean_tag, is_in_club
 from utils.season import get_season_config, days_until_end
 from utils.time_utils import format_moscow_date
 
-WAITING_FOR_SEASON_START, WAITING_FOR_SEASON_END, WAITING_FOR_NORM = range(3)
-
 def get_user_status(tg_id):
     user = db.users.find_one({"tg_id": tg_id})
     return user.get("status") if user else None
 
-def send_photo_or_text(update, context, photo_name, caption):
-    photo_path = f"assets/{photo_name}"
-    try:
-        with open(photo_path, "rb") as f:
-            return update.message.reply_photo(photo=f, caption=caption)
-    except FileNotFoundError:
-        return update.message.reply_text(caption)
+# ✅ ИСПРАВЛЕНА ФУНКЦИЯ ОТПРАВКИ ФОТО
+async def send_photo_or_text(update: Update, photo_name: str, caption: str):
+    """
+    Отправляет изображение из папки assets, если оно существует.
+    Иначе — отправляет только текст.
+    """
+    photo_path = os.path.join("assets", photo_name)
+    if os.path.isfile(photo_path):
+        await update.message.reply_photo(photo=photo_path, caption=caption)
+    else:
+        await update.message.reply_text(caption)
 
 # --- /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -32,7 +34,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Зарегистрируйся: /register Имя #Тег\n"
         "❓ Справка: /help"
     )
-    await send_photo_or_text(update, context, "start.jpg", caption)
+    await send_photo_or_text(update, "start.jpg", caption)
 
 # --- /help ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -45,7 +47,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆 /top — рейтинги\n"
         "🏡 /club — информация о клубе"
     )
-    await send_photo_or_text(update, context, "help.jpg", text)
+    await send_photo_or_text(update, "help.jpg", text)
 
 # --- /register ---
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,7 +80,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "bs_tag": clean_bs_tag,
                 "status": "pending",
                 "join_bot_date": datetime.now(timezone.utc),
-                "join_club_date": datetime.now(timezone.utc)  # будет обновлено при первом входе
+                "join_club_date": datetime.now(timezone.utc)
             }
         },
         upsert=True
@@ -112,7 +114,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Не удалось отправить админу: {e}")
 
     await send_photo_or_text(
-        update, context, "register.jpg",
+        update, "register.jpg",
         "✅ Запрос на регистрацию отправлен!\n\n"
         "⏳ Ожидайте подтверждения от администратора."
     )
@@ -134,7 +136,7 @@ async def navigator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅️ Назад", callback_data="nav_back")]
     ]
     await send_photo_or_text(
-        update, context, "navigator.jpg",
+        update, "navigator.jpg",
         "🐻 МЕДВЕЖАТА | НАВИГАТОР 🧭\nВыбери, куда отправимся:"
     )
     await update.message.reply_text("Меню:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -154,8 +156,7 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = get_season_config()
     norm = user.get("custom_norm", config["base_norm"])
     current = cache["trophies"]
-    # В реальности — нужно хранить trophies_at_join
-    progress = current  # временно
+    progress = current
     percent = min(100, round(progress / norm * 100)) if norm > 0 else 0
 
     if progress >= norm:
@@ -190,7 +191,7 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Норма выполнена: {status_emoji} {status_text}\n"
         f"Дней до конца сезона: {days} дней ({hours} часов) ⏳"
     )
-    await send_photo_or_text(update, context, "me.jpg", text)
+    await send_photo_or_text(update, "me.jpg", text)
 
 # --- /you ---
 async def you(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -208,8 +209,8 @@ async def you(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.startswith("@"):
         db_user = db.users.find_one({"tg_username": query[1:], "status": "approved"})
     elif query.startswith("#"):
-        clean_tag = clean_tag(query)
-        db_user = db.users.find_one({"bs_tag": clean_tag, "status": "approved"})
+        clean_tag_val = clean_tag(query)
+        db_user = db.users.find_one({"bs_tag": clean_tag_val, "status": "approved"})
     else:
         await update.message.reply_text("❌ Используй @username или #Тег")
         return
@@ -258,7 +259,7 @@ async def you(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Норма выполнена: {status_emoji} {status_text}\n"
         f"Дней до конца сезона: {days} дней ({hours} часов) ⏳"
     )
-    await send_photo_or_text(update, context, "you.jpg", text)
+    await send_photo_or_text(update, "you.jpg", text)
 
 # --- /top ---
 TOP_STATE = 0
@@ -267,7 +268,6 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Сначала зарегистрируйся и дождись подтверждения.")
         return
 
-    # Собираем игроков
     users = list(db.users.find({"status": "approved"}))
     players = []
     for u in users:
@@ -275,7 +275,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not cache:
             continue
         norm = u.get("custom_norm", get_season_config()["base_norm"])
-        progress = cache["trophies"]  # временно
+        progress = cache["trophies"]
         players.append({
             "name": cache["name"],
             "tag": u["bs_tag"],
@@ -284,7 +284,6 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "percent": min(100, round(progress / norm * 100)) if norm > 0 else 0
         })
 
-    # Сортируем по кубкам
     players.sort(key=lambda x: x["trophies"], reverse=True)
     lines = []
     for i, p in enumerate(players[:10]):
@@ -297,7 +296,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🏠 Вернуться в /navigator", callback_data="nav_back")]
     ]
     context.user_data["top_players"] = players
-    await send_photo_or_text(update, context, "top.jpg", text)
+    await send_photo_or_text(update, "top.jpg", text)
     await update.message.reply_text("Выберите:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def top_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,7 +358,7 @@ async def club(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"До конца: {days} дней ({hours} часов) ⏳\n\n"
         "🔥 Держим планку! Медвежья сила в единстве! 🐻💪"
     )
-    await send_photo_or_text(update, context, "club.jpg", text)
+    await send_photo_or_text(update, "club.jpg", text)
 
 # Navigation callbacks
 async def nav_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -379,9 +378,3 @@ async def nav_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
     elif data == "nav_back":
         await query.edit_message_text("🧭 Вернулись в предыдущее меню.")
-
-# --- Export handlers
-__all__ = [
-    "start", "help_command", "register", "navigator", "me", "you", "top", "club",
-    "top_callback", "nav_callback"
-]
